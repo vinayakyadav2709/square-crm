@@ -17,7 +17,9 @@ interface AuthState {
   token: string | null
   isAuthenticated: boolean
   login: (email: string, password: string) => Promise<void>
-  loginAsGuest: () => Promise<void> // ✅ New guest login
+  register: (name: string, email: string, password: string, role: Role) => Promise<void>
+  loginAsGuest: () => Promise<void>
+  setUser: (user: User, token: string) => void
   logout: () => Promise<void>
   checkAuth: () => Promise<void>
 }
@@ -27,17 +29,16 @@ export const useAuth = create<AuthState>((set) => ({
   token: null,
   isAuthenticated: false,
 
-  // ✅ Guest login - no network required
+  // Guest login - no network required
   loginAsGuest: async () => {
     try {
       const guestUser: User = {
         id: 'guest-' + Date.now(),
         email: 'guest@local',
         name: 'Guest User',
-        role: 'admin', // Give admin access for full testing
+        role: 'admin',
       }
 
-      // Save to WatermelonDB
       await database.write(async () => {
         await database.get<AuthSession>('auth_sessions').create((session) => {
           session.userId = guestUser.id
@@ -45,7 +46,7 @@ export const useAuth = create<AuthState>((set) => ({
           session.name = guestUser.name
           session.role = guestUser.role
           session.token = 'guest-token'
-          session.createdAt = new Date()
+          // Don't set createdAt - let DB handle it
         })
       })
 
@@ -59,6 +60,7 @@ export const useAuth = create<AuthState>((set) => ({
     }
   },
 
+  // Regular login
   login: async (email: string, password: string) => {
     try {
       const response = await fetch(getApiUrl(API_ENDPOINTS.AUTH.LOGIN), {
@@ -81,7 +83,6 @@ export const useAuth = create<AuthState>((set) => ({
           session.name = data.user.name
           session.role = data.user.role
           session.token = data.token
-          session.createdAt = new Date()
         })
       })
 
@@ -95,6 +96,52 @@ export const useAuth = create<AuthState>((set) => ({
     }
   },
 
+  // Register new user
+  register: async (name: string, email: string, password: string, role: Role) => {
+    try {
+      const response = await fetch(getApiUrl(API_ENDPOINTS.AUTH.REGISTER), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, email, password, role }),
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.message || 'Registration failed')
+      }
+
+      const data = await response.json()
+
+      await database.write(async () => {
+        await database.get<AuthSession>('auth_sessions').create((session) => {
+          session.userId = data.user.id
+          session.email = data.user.email
+          session.name = data.user.name
+          session.role = data.user.role
+          session.token = data.token
+        })
+      })
+
+      set({
+        user: data.user,
+        token: data.token,
+        isAuthenticated: true,
+      })
+    } catch (error: any) {
+      throw new Error(error.message || 'Registration failed')
+    }
+  },
+
+  // Set user manually (for account switching)
+  setUser: (user: User, token: string) => {
+    set({
+      user,
+      token,
+      isAuthenticated: true,
+    })
+  },
+
+  // Logout
   logout: async () => {
     try {
       const sessions = await database.get<AuthSession>('auth_sessions').query().fetch()
@@ -109,6 +156,7 @@ export const useAuth = create<AuthState>((set) => ({
     }
   },
 
+  // Check auth on app start
   checkAuth: async () => {
     try {
       const sessions = await database.get<AuthSession>('auth_sessions').query().fetch()
